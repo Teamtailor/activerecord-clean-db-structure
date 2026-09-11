@@ -2,7 +2,7 @@
 
 ## Unreleased
 
-* Add "keep_partitions" option to keep partitioned tables, ATTACH PARTITION statements and ON ONLY indexes in the dump
+* Add "keep_partitions" option to keep partitions and their ATTACH PARTITION statements in the dump (partition indexes and constraints are recreated by the parent on load)
 * Fix "order_column_definitions" crashing on `CREATE TABLE ... PARTITION BY`
 
 ## 0.4.0    2019-08-27

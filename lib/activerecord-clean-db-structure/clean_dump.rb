@@ -69,40 +69,47 @@ module ActiveRecordCleanDbStructure
         dump.gsub!(index_regexp, '')
       end
 
-      unless options[:keep_partitions] == true
-        # Remove partitioned tables
-        partitioned_tables = []
+      # Remove partitioned tables. With keep_partitions the partitions and their ATTACH PARTITION
+      # statements stay, but their indexes and constraints go: the parent's CREATE INDEX and
+      # ADD CONSTRAINT recurse into attached partitions and recreate them on load.
+      partitioned_tables = []
 
-        # Postgres 12 pg_dump will output separate ATTACH PARTITION statements (even when run against an 11 or older server)
-        partitioned_tables_regexp1 = /ALTER TABLE ONLY [\w_\.]+ ATTACH PARTITION ([\w_\.]+)/
-        partitioned_tables += dump.scan(partitioned_tables_regexp1).map(&:last)
+      # Postgres 12 pg_dump will output separate ATTACH PARTITION statements (even when run against an 11 or older server)
+      partitioned_tables_regexp1 = /ALTER TABLE ONLY [\w_\.]+ ATTACH PARTITION ([\w_\.]+)/
+      partitioned_tables += dump.scan(partitioned_tables_regexp1).map(&:last)
 
-        # Earlier versions use an inline PARTITION OF
-        partitioned_tables_regexp2 = /-- Name: ([\w_\.]+); Type: TABLE\n\n[^;]+?PARTITION OF [\w_\.]+\n[^;]+?;/m
-        partitioned_tables += dump.scan(partitioned_tables_regexp2).map(&:first)
+      # Earlier versions use an inline PARTITION OF
+      partitioned_tables_regexp2 = /-- Name: ([\w_\.]+); Type: TABLE\n\n[^;]+?PARTITION OF [\w_\.]+\n[^;]+?;/m
+      partitioned_tables += dump.scan(partitioned_tables_regexp2).map(&:first)
 
-        partitioned_tables.each do |partitioned_table|
-          partitioned_schema_name, partitioned_table_name_only = partitioned_table.split('.', 2)
-          dump.gsub!(/-- Name: #{partitioned_table_name_only}; Type: TABLE/, '')
+      partitioned_tables.each do |partitioned_table|
+        partitioned_schema_name, partitioned_table_name_only = partitioned_table.split('.', 2)
+        unless options[:keep_partitions] == true
+          dump.gsub!(/-- Name: #{partitioned_table_name_only}; Type: TABLE( ATTACH)?\n/, '')
           dump.gsub!(/CREATE TABLE #{partitioned_table} \([^;]+;/m, '')
           dump.gsub!(/ALTER TABLE ONLY ([\w_\.]+) ATTACH PARTITION #{partitioned_table}[^;]+;/m, '')
-
-          dump.gsub!(/ALTER TABLE ONLY ([\w_]+\.)?#{partitioned_table}[^;]+;/, '')
-          dump.gsub!(/-- Name: #{partitioned_table} [^;]+; Type: DEFAULT/, '')
-
-          index_regexp = /CREATE (UNIQUE )?INDEX ([\w_]+) ON ([\w_]+\.)?#{partitioned_table}[^;]+;/m
-          dump.scan(index_regexp).each do |m|
-            partitioned_table_index = m[1]
-            dump.gsub!("-- Name: #{partitioned_table_index}; Type: INDEX ATTACH", '')
-            dump.gsub!("-- Name: #{partitioned_table_index}; Type: INDEX", '')
-            dump.gsub!(/ALTER INDEX ([\w_\.]+) ATTACH PARTITION ([\w_]+\.)?#{partitioned_table_index};/, '')
-          end
-          dump.gsub!(index_regexp, '')
-
-          dump.gsub!(/-- Name: #{partitioned_table}_pkey; Type: INDEX ATTACH\n\n[^;]+?ATTACH PARTITION ([\w_]+\.)?#{partitioned_table}_pkey;/, '')
         end
-        # This is mostly done to allow restoring Postgres 11 output on Postgres 10
-        dump.gsub!(/CREATE INDEX ([\w_]+) ON ONLY/, 'CREATE INDEX \\1 ON')
+
+        dump.gsub!(/ALTER TABLE ONLY ([\w_]+\.)?#{partitioned_table_name_only}\b[^;]+;/, '')
+        dump.gsub!(/-- Name: #{partitioned_table_name_only} [^;]+; Type: (DEFAULT|CONSTRAINT)\n/, '')
+
+        index_regexp = /CREATE (UNIQUE )?INDEX ([\w_]+) ON ([\w_]+\.)?#{partitioned_table_name_only}\b[^;]+;/m
+        dump.scan(index_regexp).each do |m|
+          partitioned_table_index = m[1]
+          dump.gsub!(/-- Name: #{partitioned_table_index}; Type: INDEX( ATTACH)?\n/, '')
+          dump.gsub!(/ALTER INDEX ([\w_\.]+) ATTACH PARTITION ([\w_]+\.)?#{partitioned_table_index};/, '')
+        end
+        dump.gsub!(index_regexp, '')
+      end
+      # Primary key indexes have no CREATE INDEX statement of their own
+      dump.gsub!(/-- Name: [\w_]+; Type: INDEX ATTACH\n+ALTER INDEX [\w_\.]+ ATTACH PARTITION [\w_\.]+;\n/, '')
+
+      # This is mostly done to allow restoring Postgres 11 output on Postgres 10
+      dump.gsub!(/CREATE (UNIQUE )?INDEX ([\w_]+) ON ONLY/, 'CREATE \\1INDEX \\2 ON')
+
+      # Let constraints on a partitioned parent recurse into its partitions on load
+      dump.scan(/CREATE TABLE ([\w_\.]+) \([^;]*?\)\nPARTITION BY /m).flatten.each do |parent|
+        dump.gsub!(/ALTER TABLE ONLY #{parent}\n    ADD CONSTRAINT/, "ALTER TABLE #{parent}\n    ADD CONSTRAINT")
       end
 
       if options[:order_schema_migrations_values] == true
