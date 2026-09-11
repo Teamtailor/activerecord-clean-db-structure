@@ -61,6 +61,12 @@ CREATE INDEX index_users_on_tentant_id ON public.users USING btree (tenant_id);
 CREATE UNIQUE INDEX index_users_on_email ON public.users USING btree (email);
 ```
 
+By default, partitions and their `ATTACH PARTITION` statements are removed from the dump. To keep them (so `db:schema:load` recreates the partitions), set `keep_partitions`:
+
+```ruby
+  config.activerecord_clean_db_structure.keep_partitions = true
+```
+
 To enable sorting the table column definitions alphabetically, discarding the actual order provided by `pg_dump`, set `order_column_definitions`:
 
 ```ruby

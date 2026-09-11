@@ -69,39 +69,41 @@ module ActiveRecordCleanDbStructure
         dump.gsub!(index_regexp, '')
       end
 
-      # Remove partitioned tables
-      partitioned_tables = []
+      unless options[:keep_partitions] == true
+        # Remove partitioned tables
+        partitioned_tables = []
 
-      # Postgres 12 pg_dump will output separate ATTACH PARTITION statements (even when run against an 11 or older server)
-      partitioned_tables_regexp1 = /ALTER TABLE ONLY [\w_\.]+ ATTACH PARTITION ([\w_\.]+)/
-      partitioned_tables += dump.scan(partitioned_tables_regexp1).map(&:last)
+        # Postgres 12 pg_dump will output separate ATTACH PARTITION statements (even when run against an 11 or older server)
+        partitioned_tables_regexp1 = /ALTER TABLE ONLY [\w_\.]+ ATTACH PARTITION ([\w_\.]+)/
+        partitioned_tables += dump.scan(partitioned_tables_regexp1).map(&:last)
 
-      # Earlier versions use an inline PARTITION OF
-      partitioned_tables_regexp2 = /-- Name: ([\w_\.]+); Type: TABLE\n\n[^;]+?PARTITION OF [\w_\.]+\n[^;]+?;/m
-      partitioned_tables += dump.scan(partitioned_tables_regexp2).map(&:first)
+        # Earlier versions use an inline PARTITION OF
+        partitioned_tables_regexp2 = /-- Name: ([\w_\.]+); Type: TABLE\n\n[^;]+?PARTITION OF [\w_\.]+\n[^;]+?;/m
+        partitioned_tables += dump.scan(partitioned_tables_regexp2).map(&:first)
 
-      partitioned_tables.each do |partitioned_table|
-        partitioned_schema_name, partitioned_table_name_only = partitioned_table.split('.', 2)
-        dump.gsub!(/-- Name: #{partitioned_table_name_only}; Type: TABLE/, '')
-        dump.gsub!(/CREATE TABLE #{partitioned_table} \([^;]+;/m, '')
-        dump.gsub!(/ALTER TABLE ONLY ([\w_\.]+) ATTACH PARTITION #{partitioned_table}[^;]+;/m, '')
+        partitioned_tables.each do |partitioned_table|
+          partitioned_schema_name, partitioned_table_name_only = partitioned_table.split('.', 2)
+          dump.gsub!(/-- Name: #{partitioned_table_name_only}; Type: TABLE/, '')
+          dump.gsub!(/CREATE TABLE #{partitioned_table} \([^;]+;/m, '')
+          dump.gsub!(/ALTER TABLE ONLY ([\w_\.]+) ATTACH PARTITION #{partitioned_table}[^;]+;/m, '')
 
-        dump.gsub!(/ALTER TABLE ONLY ([\w_]+\.)?#{partitioned_table}[^;]+;/, '')
-        dump.gsub!(/-- Name: #{partitioned_table} [^;]+; Type: DEFAULT/, '')
+          dump.gsub!(/ALTER TABLE ONLY ([\w_]+\.)?#{partitioned_table}[^;]+;/, '')
+          dump.gsub!(/-- Name: #{partitioned_table} [^;]+; Type: DEFAULT/, '')
 
-        index_regexp = /CREATE (UNIQUE )?INDEX ([\w_]+) ON ([\w_]+\.)?#{partitioned_table}[^;]+;/m
-        dump.scan(index_regexp).each do |m|
-          partitioned_table_index = m[1]
-          dump.gsub!("-- Name: #{partitioned_table_index}; Type: INDEX ATTACH", '')
-          dump.gsub!("-- Name: #{partitioned_table_index}; Type: INDEX", '')
-          dump.gsub!(/ALTER INDEX ([\w_\.]+) ATTACH PARTITION ([\w_]+\.)?#{partitioned_table_index};/, '')
+          index_regexp = /CREATE (UNIQUE )?INDEX ([\w_]+) ON ([\w_]+\.)?#{partitioned_table}[^;]+;/m
+          dump.scan(index_regexp).each do |m|
+            partitioned_table_index = m[1]
+            dump.gsub!("-- Name: #{partitioned_table_index}; Type: INDEX ATTACH", '')
+            dump.gsub!("-- Name: #{partitioned_table_index}; Type: INDEX", '')
+            dump.gsub!(/ALTER INDEX ([\w_\.]+) ATTACH PARTITION ([\w_]+\.)?#{partitioned_table_index};/, '')
+          end
+          dump.gsub!(index_regexp, '')
+
+          dump.gsub!(/-- Name: #{partitioned_table}_pkey; Type: INDEX ATTACH\n\n[^;]+?ATTACH PARTITION ([\w_]+\.)?#{partitioned_table}_pkey;/, '')
         end
-        dump.gsub!(index_regexp, '')
-
-        dump.gsub!(/-- Name: #{partitioned_table}_pkey; Type: INDEX ATTACH\n\n[^;]+?ATTACH PARTITION ([\w_]+\.)?#{partitioned_table}_pkey;/, '')
+        # This is mostly done to allow restoring Postgres 11 output on Postgres 10
+        dump.gsub!(/CREATE INDEX ([\w_]+) ON ONLY/, 'CREATE INDEX \\1 ON')
       end
-      # This is mostly done to allow restoring Postgres 11 output on Postgres 10
-      dump.gsub!(/CREATE INDEX ([\w_]+) ON ONLY/, 'CREATE INDEX \\1 ON')
 
       if options[:order_schema_migrations_values] == true
         schema_migrations_cleanup
@@ -148,7 +150,7 @@ module ActiveRecordCleanDbStructure
           inside_table = true
           columns = []
           result << source_line
-        elsif source_line.start_with?(");")
+        elsif source_line.start_with?(")")
           if inside_table
             inside_table = false
             columns.sort_by!(&:first)
